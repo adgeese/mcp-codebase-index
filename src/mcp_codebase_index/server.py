@@ -524,13 +524,17 @@ TOOLS = [
                     "type": "integer",
                     "description": "Maximum number of results to return (0 = unlimited, default 0).",
                 },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "If true, return rich dicts (name, file, line, type, signature, preview) per result instead of bare symbol names. Default false.",
+                },
             },
             "required": ["name"],
         },
     ),
     Tool(
         name="get_dependents",
-        description="What calls/uses this symbol? Returns list of symbols that reference the named function or class.",
+        description="What calls/uses this symbol? Returns list of symbols that reference the named function or class. Handles dotted method names (Class.method).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -542,13 +546,17 @@ TOOLS = [
                     "type": "integer",
                     "description": "Maximum number of results to return (0 = unlimited, default 0).",
                 },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "If true, return rich dicts (name, file, line, type, signature, preview) per result instead of bare symbol names. Default false.",
+                },
             },
             "required": ["name"],
         },
     ),
     Tool(
         name="get_change_impact",
-        description="Analyze the impact of changing a symbol. Returns direct dependents and transitive (cascading) dependents.",
+        description="Analyze the impact of changing a symbol. Returns direct dependents and transitive (cascading) dependents. Handles dotted method names (Class.method).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -563,6 +571,10 @@ TOOLS = [
                 "max_transitive": {
                     "type": "integer",
                     "description": "Maximum number of transitive dependents to return (0 = unlimited, default 0).",
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "If true, return rich dicts per dependent instead of bare symbol names. Default false.",
                 },
             },
             "required": ["name"],
@@ -581,6 +593,10 @@ TOOLS = [
                 "to_name": {
                     "type": "string",
                     "description": "Target symbol name.",
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "If true, return {chain: [rich dict per hop]} instead of a bare list of symbol names. Default false.",
                 },
             },
             "required": ["from_name", "to_name"],
@@ -744,23 +760,35 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         elif name == "get_dependencies":
             max_results = arguments.get("max_results", 0)
-            result = _query_fns["get_dependencies"](arguments["name"], max_results=max_results)
+            verbose = arguments.get("verbose", False)
+            result = _query_fns["get_dependencies"](
+                arguments["name"], max_results=max_results, verbose=verbose
+            )
 
         elif name == "get_dependents":
             max_results = arguments.get("max_results", 0)
-            result = _query_fns["get_dependents"](arguments["name"], max_results=max_results)
+            verbose = arguments.get("verbose", False)
+            result = _query_fns["get_dependents"](
+                arguments["name"], max_results=max_results, verbose=verbose
+            )
 
         elif name == "get_change_impact":
             max_direct = arguments.get("max_direct", 0)
             max_transitive = arguments.get("max_transitive", 0)
+            verbose = arguments.get("verbose", False)
             result = _query_fns["get_change_impact"](
-                arguments["name"], max_direct=max_direct, max_transitive=max_transitive
+                arguments["name"],
+                max_direct=max_direct,
+                max_transitive=max_transitive,
+                verbose=verbose,
             )
 
         elif name == "get_call_chain":
+            verbose = arguments.get("verbose", False)
             result = _query_fns["get_call_chain"](
                 arguments["from_name"],
                 arguments["to_name"],
+                verbose=verbose,
             )
 
         elif name == "get_file_dependencies":

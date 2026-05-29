@@ -666,6 +666,100 @@ class TestProjectQueryFunctions:
 
 
 # ---------------------------------------------------------------------------
+# Dotted-method fallback + verbose (rich) resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestDottedMethodFallback:
+    """Class.method queries fall back to the class in the reverse graph."""
+
+    def setup_method(self):
+        self.index = _make_project_index()
+        self.funcs = create_project_query_functions(self.index)
+
+    def test_get_dependents_dotted_method_fallback(self):
+        # "Runner.execute" is absent from reverse graph, but "Runner" -> {"main"}
+        deps = self.funcs["get_dependents"]("Runner.execute")
+        assert deps == ["main"]
+
+    def test_get_dependents_direct_still_works(self):
+        deps = self.funcs["get_dependents"]("Engine.run")
+        assert deps == ["Runner.execute"]
+
+    def test_get_dependents_unknown_still_errors(self):
+        deps = self.funcs["get_dependents"]("Nonexistent.method")
+        assert "Error" in deps[0]
+
+    def test_get_change_impact_dotted_method_fallback(self):
+        impact = self.funcs["get_change_impact"]("Runner.execute")
+        assert "main" in impact["direct"]
+
+
+class TestVerboseResolution:
+    """verbose=True returns rich dicts instead of bare symbol-name strings."""
+
+    def setup_method(self):
+        self.index = _make_project_index()
+        self.funcs = create_project_query_functions(self.index)
+
+    def test_get_dependencies_verbose(self):
+        deps = self.funcs["get_dependencies"]("Engine.run", verbose=True)
+        assert isinstance(deps, list)
+        helper = next(d for d in deps if d["name"] == "helper")
+        assert helper["file"] == "src/engine_mod.py"
+        assert "line" in helper and "type" in helper
+
+    def test_get_dependencies_default_bare(self):
+        deps = self.funcs["get_dependencies"]("Engine.run")
+        assert deps == ["helper"]
+
+    def test_get_dependents_verbose(self):
+        deps = self.funcs["get_dependents"]("Engine.run", verbose=True)
+        names = {d["name"] for d in deps}
+        assert "Runner.execute" in names
+        assert all("file" in d for d in deps)
+
+    def test_get_call_chain_verbose(self):
+        result = self.funcs["get_call_chain"]("Runner.execute", "helper", verbose=True)
+        assert "chain" in result
+        chain_names = [hop["name"] for hop in result["chain"]]
+        assert chain_names == ["Runner.execute", "Engine.run", "helper"]
+
+    def test_get_call_chain_default_bare(self):
+        chain = self.funcs["get_call_chain"]("Runner.execute", "helper")
+        assert chain == ["Runner.execute", "Engine.run", "helper"]
+
+    def test_get_change_impact_verbose(self):
+        impact = self.funcs["get_change_impact"]("helper", verbose=True)
+        direct_names = {d["name"] for d in impact["direct"]}
+        assert "Engine.run" in direct_names
+        assert all("file" in d for d in impact["direct"])
+
+
+class TestFileScopedVerbose:
+    """File-scoped dependency tools support verbose rich resolution."""
+
+    def setup_method(self):
+        self.meta = _make_metadata_a()
+        self.funcs = create_file_query_functions(self.meta)
+
+    def test_get_dependencies_verbose(self):
+        deps = self.funcs["get_dependencies"]("Engine.run", verbose=True)
+        assert all(isinstance(d, dict) for d in deps)
+        assert all("name" in d for d in deps)
+
+    def test_get_dependencies_default_bare(self):
+        deps = self.funcs["get_dependencies"]("Engine.run")
+        assert all(isinstance(d, str) for d in deps)
+
+    def test_get_dependents_verbose(self):
+        deps = self.funcs["get_dependents"]("helper", verbose=True)
+        names = {d["name"] for d in deps}
+        assert "Engine.run" in names
+
+
+
+# ---------------------------------------------------------------------------
 # Truncation / output size control tests
 # ---------------------------------------------------------------------------
 
