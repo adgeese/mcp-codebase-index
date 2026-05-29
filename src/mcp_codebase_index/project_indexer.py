@@ -26,6 +26,7 @@ import fnmatch
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -336,7 +337,15 @@ class ProjectIndexer:
     # ------------------------------------------------------------------
 
     def _discover_files(self) -> list[str]:
-        """Discover files matching include patterns, excluding exclude patterns."""
+        """Discover files matching include patterns, excluding exclude patterns.
+
+        In git repositories, paths matching .gitignore rules (and
+        .git/info/exclude, global gitignore) are also excluded via
+        ``git check-ignore --no-index``. ``--no-index`` makes the check honour
+        the ignore *patterns* regardless of whether a file is already tracked,
+        so accidentally-committed junk (e.g. AI session logs) is still kept
+        out of the index.
+        """
         root = Path(self.root_path)
         matched: set[str] = set()
 
@@ -360,6 +369,15 @@ class ProjectIndexer:
 
                     matched.add(abs_str)
 
+        # In git repos, also honour .gitignore / .git/info/exclude / global
+        # gitignore by asking git which of the discovered paths it would ignore.
+        git_ignored = self._get_git_ignored_paths(matched)
+        if git_ignored:
+            logger.info(
+                "Excluding %d git-ignored files from index", len(git_ignored),
+            )
+            matched -= git_ignored
+
         return sorted(matched)
 
     def _is_excluded(self, rel_path: str) -> bool:
@@ -377,6 +395,90 @@ class ProjectIndexer:
             if pattern_parts in parts:
                 return True
         return False
+
+    @staticmethod
+    def _find_git_root(path: str) -> str | None:
+        """Return the git work-tree root for *path*, or ``None``."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    def _get_git_ignored_paths(self, paths: set[str]) -> set[str]:
+        """Return the subset of *paths* that match git ignore rules.
+
+        Groups paths by their containing git repository and runs
+        ``git check-ignore --no-index -z --stdin`` once per repo, so that
+        per-repo ``.gitignore`` files are respected even when ``PROJECT_ROOT``
+        spans multiple repositories or is not itself a git repo. ``--no-index``
+        ensures tracked-but-ignored files are still reported, and ``-z`` makes
+        I/O NUL-delimited to avoid git's C-style quoting of non-ASCII paths.
+
+        Returns an empty set when no paths are inside a git repository
+        or git is unavailable.
+        """
+        if not paths:
+            return set()
+
+        # Group paths by their git repo root.
+        repos: dict[str, list[str]] = {}  # repo_root -> [abs_paths]
+        no_repo_dirs: set[str] = set()  # dirs already known to lack a repo
+        for abs_path in paths:
+            dir_path = os.path.dirname(abs_path)
+            # Fast-path: skip lookup if we already know this dir has no repo.
+            if dir_path in no_repo_dirs:
+                continue
+            # Check cache of known repo roots.
+            repo_root: str | None = None
+            for known_root in repos:
+                if abs_path.startswith(known_root + os.sep):
+                    repo_root = known_root
+                    break
+            if repo_root is None:
+                repo_root = self._find_git_root(dir_path)
+                if repo_root is None:
+                    no_repo_dirs.add(dir_path)
+                    continue
+            repos.setdefault(repo_root, []).append(abs_path)
+
+        # Run git check-ignore once per repo.
+        ignored: set[str] = set()
+        for repo_root, repo_paths in repos.items():
+            try:
+                result = subprocess.run(
+                    ["git", "check-ignore", "--no-index", "-z", "--stdin"],
+                    input="\0".join(repo_paths) + "\0",
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+            # git check-ignore exits 0 when at least one path is ignored,
+            # 1 when none are ignored, and 128 on error.
+            if result.returncode not in (0, 1):
+                continue
+
+            # NUL-delimited output (``-z``) avoids git's C-style path quoting
+            # for non-ASCII/special characters, which would otherwise break
+            # string-matching against the discovered absolute paths.
+            for line in result.stdout.split("\0"):
+                line = line.strip("\0").strip()
+                if line:
+                    ignored.add(line)
+
+        return ignored
 
     def _read_file(self, abs_path: str) -> str:
         """Read a file as text, trying UTF-8 first then latin-1 as fallback."""

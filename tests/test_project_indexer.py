@@ -12,6 +12,8 @@ Covers:
 """
 
 import os
+import shutil
+import subprocess
 import textwrap
 
 import pytest
@@ -237,6 +239,80 @@ class TestFileDiscovery:
 
         for f in idx.files:
             assert f.endswith(".py"), f"Non-Python file included: {f}"
+
+
+# ---------------------------------------------------------------------------
+# Test: .gitignore exclusion (real git repo)
+# ---------------------------------------------------------------------------
+
+
+def _git(args, cwd):
+    """Run a git command in *cwd*, returning the CompletedProcess."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+@pytest.fixture
+def git_project(tmp_path):
+    """A git repo whose .gitignore covers a dir AND a tracked, non-ASCII file.
+
+    Layout::
+
+        gitproj/
+            .gitignore            (ignores junk/ and the em-dash note)
+            keep.py               (indexed)
+            junk/leak.py          (gitignored, untracked -> excluded)
+            "Notes — Draft.md"    (gitignored BUT committed -> still excluded)
+
+    Returns ``None`` (skips the test) if git is unavailable.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    root = tmp_path / "gitproj"
+    root.mkdir()
+
+    (root / ".gitignore").write_text("junk/\nNotes \u2014 Draft.md\n")
+    (root / "keep.py").write_text("def kept():\n    return 1\n")
+    (root / "junk").mkdir()
+    (root / "junk" / "leak.py").write_text("def leaked():\n    return 2\n")
+    # Tracked-but-gitignored file with a non-ASCII (em-dash) name.
+    (root / "Notes \u2014 Draft.md").write_text("# secret notes\n")
+
+    _git(["init"], root)
+    _git(["config", "user.email", "test@example.com"], root)
+    _git(["config", "user.name", "Test"], root)
+    # Force-add the gitignored note so it becomes tracked-but-ignored.
+    _git(["add", "keep.py"], root)
+    _git(["add", "-f", "Notes \u2014 Draft.md"], root)
+    _git(["commit", "-m", "init", "--no-gpg-sign"], root)
+
+    return root
+
+
+class TestGitignoreExclusion:
+    def test_untracked_gitignored_dir_excluded(self, git_project):
+        idx = ProjectIndexer(str(git_project)).index()
+        for f in idx.files:
+            assert not f.startswith("junk"), f"gitignored dir leaked: {f}"
+
+    def test_tracked_but_gitignored_nonascii_file_excluded(self, git_project):
+        # Regression: tracked files matching .gitignore must still be excluded
+        # (requires `git check-ignore --no-index`), and a non-ASCII path must
+        # match correctly (requires `-z` to avoid git's C-style quoting).
+        idx = ProjectIndexer(str(git_project)).index()
+        assert "Notes \u2014 Draft.md" not in idx.files
+        for f in idx.files:
+            assert "Notes" not in f, f"tracked-but-gitignored file leaked: {f}"
+
+    def test_non_ignored_file_still_indexed(self, git_project):
+        idx = ProjectIndexer(str(git_project)).index()
+        assert "keep.py" in idx.files
 
 
 # ---------------------------------------------------------------------------

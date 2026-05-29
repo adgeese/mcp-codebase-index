@@ -174,42 +174,20 @@ def create_file_query_functions(metadata: StructuralMetadata) -> dict[str, Calla
                 )
         return f"Error: section '{title}' not found"
 
-    def _resolve_file_symbol(name: str) -> dict:
-        """Resolve a symbol name to rich info from the file metadata."""
-        for func in metadata.functions:
-            if func.qualified_name == name or func.name == name:
-                return {
-                    "name": func.qualified_name,
-                    "file": metadata.source_name,
-                    "line": func.line_range.start,
-                    "end_line": func.line_range.end,
-                    "type": "method" if func.is_method else "function",
-                }
-        for cls in metadata.classes:
-            if cls.name == name:
-                return {
-                    "name": cls.name,
-                    "file": metadata.source_name,
-                    "line": cls.line_range.start,
-                    "end_line": cls.line_range.end,
-                    "type": "class",
-                }
-        return {"name": name}
-
-    def get_dependencies(name: str) -> list[dict]:
+    def get_dependencies(name: str) -> list[str]:
         """What this function/class references."""
         deps = metadata.dependency_graph.get(name)
         if deps is None:
-            return [{"error": f"'{name}' not found in dependency graph"}]
-        return [_resolve_file_symbol(dep) for dep in sorted(deps)]
+            return [f"Error: '{name}' not found in dependency graph"]
+        return list(deps)
 
-    def get_dependents(name: str) -> list[dict]:
+    def get_dependents(name: str) -> list[str]:
         """What references this function/class."""
         result = []
         for source, targets in metadata.dependency_graph.items():
             if name in targets:
                 result.append(source)
-        return [_resolve_file_symbol(dep) for dep in sorted(result)]
+        return result
 
     def search_lines(pattern: str) -> list[dict]:
         """Regex search, returns [{line_number, content}], max 100 results."""
@@ -489,7 +467,6 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
     def _func_result(func, path, meta):
         preview_lines = meta.lines[func.line_range.start - 1 : func.line_range.start + 19]
         return {
-            "name": func.qualified_name,
             "file": path,
             "line": func.line_range.start,
             "end_line": func.line_range.end,
@@ -501,7 +478,6 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
     def _class_result(cls, path, meta):
         preview_lines = meta.lines[cls.line_range.start - 1 : cls.line_range.start + 19]
         return {
-            "name": cls.name,
             "file": path,
             "line": cls.line_range.start,
             "end_line": cls.line_range.end,
@@ -511,9 +487,8 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
             "source_preview": "\n".join(preview_lines),
         }
 
-    def _resolve_symbol_info(name: str) -> dict:
-        """Resolve a symbol name to rich info (file, line, signature, preview)."""
-        # Try symbol table first
+    def find_symbol(name: str) -> dict:
+        """Find where a symbol is defined: {file, line, type, signature, source_preview}."""
         if name in index.symbol_table:
             path = index.symbol_table[name]
             meta = _resolve_file(index, path)
@@ -532,90 +507,50 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
             for cls in meta.classes:
                 if cls.name == name:
                     return _class_result(cls, path, meta)
-        return {"name": name}
+        return {"error": f"symbol '{name}' not found"}
 
-    def find_symbol(name: str) -> dict:
-        """Find where a symbol is defined: {file, line, type, signature, source_preview}."""
-        result = _resolve_symbol_info(name)
-        if "file" not in result:
-            return {"error": f"symbol '{name}' not found"}
-        return result
-
-    def get_dependencies(name: str, max_results: int = 0) -> list[dict]:
+    def get_dependencies(name: str, max_results: int = 0) -> list[str]:
         """What this function/class references (from global_dependency_graph)."""
         deps = index.global_dependency_graph.get(name)
         if deps is None:
-            return [{"error": f"'{name}' not found in dependency graph"}]
+            return [f"Error: '{name}' not found in dependency graph"]
         result = sorted(deps)
         if max_results > 0:
             result = result[:max_results]
-        return [_resolve_symbol_info(dep) for dep in result]
+        return result
 
-    def _resolve_dep_name(name: str) -> tuple[str, set | None]:
-        """Look up name in reverse dependency graph, falling back to class name for dotted methods."""
-        deps = index.reverse_dependency_graph.get(name)
-        if deps is not None:
-            return name, deps
-        # For "Class.method", fall back to dependents of "Class"
-        if "." in name:
-            class_name = name.split(".")[0]
-            deps = index.reverse_dependency_graph.get(class_name)
-            if deps is not None:
-                return class_name, deps
-        return name, None
-
-    def get_dependents(name: str, max_results: int = 0) -> list[dict]:
+    def get_dependents(name: str, max_results: int = 0) -> list[str]:
         """What references this function/class (from reverse_dependency_graph)."""
-        resolved_name, deps = _resolve_dep_name(name)
+        deps = index.reverse_dependency_graph.get(name)
         if deps is None:
-            return [{"error": f"'{name}' not found in reverse dependency graph"}]
+            return [f"Error: '{name}' not found in reverse dependency graph"]
         result = sorted(deps)
         if max_results > 0:
             result = result[:max_results]
-        return [_resolve_symbol_info(dep) for dep in result]
+        return result
 
-    def get_call_chain(from_name: str, to_name: str) -> dict:
-        """Shortest path in dependency graph (BFS).
-
-        Returns {chain: [{name, file, line, end_line, type, signature, source_preview}, ...]}
-        with rich info for each hop, so callers don't need follow-up lookups.
-        """
+    def get_call_chain(from_name: str, to_name: str) -> list[str]:
+        """Shortest path in dependency graph (BFS)."""
         if from_name not in index.global_dependency_graph:
-            return {"error": f"'{from_name}' not found in dependency graph"}
+            return [f"Error: '{from_name}' not found in dependency graph"]
         if from_name == to_name:
-            info = _resolve_symbol_info(from_name)
-            info.setdefault("name", from_name)
-            return {"chain": [info]}
+            return [from_name]
 
         # BFS
         visited = {from_name}
         queue: deque[list[str]] = deque([[from_name]])
-        path_names: list[str] | None = None
         while queue:
             path = queue.popleft()
             current = path[-1]
             neighbors = index.global_dependency_graph.get(current, set())
             for neighbor in sorted(neighbors):
                 if neighbor == to_name:
-                    path_names = path + [neighbor]
-                    break
+                    return path + [neighbor]
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append(path + [neighbor])
-            if path_names is not None:
-                break
 
-        if path_names is None:
-            return {"error": f"no path from '{from_name}' to '{to_name}'"}
-
-        # Enrich each hop with file, line, signature, source preview
-        chain = []
-        for name in path_names:
-            info = _resolve_symbol_info(name)
-            info.setdefault("name", name)
-            chain.append(info)
-
-        return {"chain": chain}
+        return [f"Error: no path from '{from_name}' to '{to_name}'"]
 
     def get_file_dependencies(file_path: str, max_results: int = 0) -> list[str]:
         """What files this file imports from (from import_graph)."""
@@ -662,7 +597,7 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
         name: str, max_direct: int = 0, max_transitive: int = 0
     ) -> dict:
         """Direct and transitive dependents of a symbol."""
-        resolved_name, direct = _resolve_dep_name(name)
+        direct = index.reverse_dependency_graph.get(name)
         if direct is None:
             return {"error": f"'{name}' not found in reverse dependency graph"}
         direct_list = sorted(direct)
@@ -688,8 +623,8 @@ def create_project_query_functions(index: ProjectIndex) -> dict[str, Callable]:
             transitive_only = transitive_only[:max_transitive]
 
         return {
-            "direct": [_resolve_symbol_info(d) for d in direct_list],
-            "transitive": [_resolve_symbol_info(t) for t in transitive_only],
+            "direct": direct_list,
+            "transitive": transitive_only,
         }
 
     return {
@@ -738,8 +673,8 @@ CODE NAVIGATION:
 
 DEPENDENCY ANALYSIS:
   find_symbol(name) -> dict                     # Where is this symbol defined?
-  get_dependencies(name) -> list[dict]           # What does it call/use? (rich info per dep)
-  get_dependents(name) -> list[dict]             # What calls/uses it? (rich info per dep)
+  get_dependencies(name) -> list[str]           # What does it call/use?
+  get_dependents(name) -> list[str]             # What calls/uses it?
   get_call_chain(from, to) -> list              # Shortest dependency path
   get_change_impact(name) -> dict               # Transitive impact of changing this symbol
   get_file_dependencies(file) -> list[str]      # Files this file imports from

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-codebase-index"
-version = "0.7.1"
+version = "0.7.2+adgeese.1"
 description = "Structural codebase indexer with MCP server for AI-assisted development"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -33,8 +33,9 @@ benchmark = ["aiohttp>=3.9"]
 mcp-codebase-index = "mcp_codebase_index.server:main_sync"
 
 [project.urls]
-Homepage = "https://github.com/MikeRecognex/mcp-codebase-index"
-Repository = "https://github.com/MikeRecognex/mcp-codebase-index"
+Homepage = "https://github.com/adgeese/mcp-codebase-index"
+Repository = "https://github.com/adgeese/mcp-codebase-index"
+Upstream = "https://github.com/MikeRecognex/mcp-codebase-index"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_codebase_index"]
