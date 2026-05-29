@@ -315,6 +315,39 @@ class TestGitignoreExclusion:
         assert "keep.py" in idx.files
 
 
+class TestCustomIgnoreFile:
+    def test_codebaseindexignore_excludes_directory(self, tmp_path):
+        root = tmp_path / "proj"
+        (root / "config").mkdir(parents=True)
+        (root / "src").mkdir()
+        (root / "config" / "noisy.json").write_text("{}\n")
+        (root / "src" / "app.py").write_text("def main():\n    return 1\n")
+        (root / ".codebaseindexignore").write_text("# noisy dirs\nconfig/\n")
+
+        idx = ProjectIndexer(str(root)).index()
+
+        assert "src/app.py" in idx.files
+        for f in idx.files:
+            assert not f.startswith("config"), f"custom-ignored dir leaked: {f}"
+
+    def test_codebaseindexignore_blank_and_comment_lines(self, tmp_path):
+        root = tmp_path / "proj"
+        (root / "keep").mkdir(parents=True)
+        (root / "keep" / "a.py").write_text("x = 1\n")
+        (root / ".codebaseindexignore").write_text("\n# just a comment\n\n")
+
+        idx = ProjectIndexer(str(root)).index()
+        assert "keep/a.py" in idx.files
+
+    def test_no_ignore_file_indexes_everything(self, tmp_path):
+        root = tmp_path / "proj"
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "x.json").write_text("{}\n")
+
+        idx = ProjectIndexer(str(root)).index()
+        assert "config/x.json" in idx.files
+
+
 # ---------------------------------------------------------------------------
 # Test: symbol table
 # ---------------------------------------------------------------------------

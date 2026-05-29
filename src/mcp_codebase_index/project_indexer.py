@@ -74,6 +74,10 @@ class ProjectIndexer:
             "**/.package-lock.json",
             "**/composer.lock",
         ]
+        # Honour a project-local ignore file (gitignore-style patterns) so that
+        # noisy directories can be excluded from the index *without* touching
+        # .gitignore. Patterns are appended to the active exclude list.
+        self.exclude_patterns = list(self.exclude_patterns) + self._load_custom_ignore_patterns()
         self.max_file_size_bytes = max_file_size_bytes
         self._project_index: ProjectIndex | None = None
 
@@ -335,6 +339,51 @@ class ProjectIndexer:
     # ------------------------------------------------------------------
     # File discovery
     # ------------------------------------------------------------------
+
+    #: Name of the project-local ignore file read in addition to .gitignore.
+    CUSTOM_IGNORE_FILENAME = ".codebaseindexignore"
+
+    def _load_custom_ignore_patterns(self) -> list[str]:
+        """Read ``.codebaseindexignore`` from the project root, if present.
+
+        The file uses simple gitignore-style lines (blank lines and ``#``
+        comments are skipped). Each entry is expanded into fnmatch patterns
+        understood by :meth:`_is_excluded`, so a directory entry such as
+        ``config/`` excludes everything under that directory.
+
+        Unlike ``.gitignore``, this file has no effect on git; it only shapes
+        what the indexer walks, letting you drop noisy directories from the
+        index without changing version control behaviour.
+        """
+        ignore_path = os.path.join(self.root_path, self.CUSTOM_IGNORE_FILENAME)
+        patterns: list[str] = []
+        try:
+            with open(ignore_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return patterns
+
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            entry = line.strip("/")
+            if not entry:
+                continue
+            # Match the entry as a directory/path prefix anywhere in the tree,
+            # and as a bare name (handled by the component check in
+            # _is_excluded).
+            patterns.append(f"{entry}/**")
+            patterns.append(f"**/{entry}/**")
+            patterns.append(entry)
+
+        if patterns:
+            logger.info(
+                "Loaded %d patterns from %s",
+                len(patterns),
+                self.CUSTOM_IGNORE_FILENAME,
+            )
+        return patterns
 
     def _discover_files(self) -> list[str]:
         """Discover files matching include patterns, excluding exclude patterns.
